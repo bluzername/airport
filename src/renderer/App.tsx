@@ -8,6 +8,8 @@ import { WorkspaceDots } from './components/WorkspaceDots';
 import { WorkspaceContainer } from './components/WorkspaceContainer';
 import { useTerminalStore } from './store/terminal-store';
 import { usePtyBridge } from './hooks/usePtyBridge';
+import { useSyncBridge } from './hooks/useSyncBridge';
+import { SyncSettingsPanel } from './components/SyncSettingsPanel';
 
 const DEFAULT_SIDEBAR_WIDTH = 384; // 320 * 1.2
 const MIN_SIDEBAR_WIDTH = 200;
@@ -18,8 +20,12 @@ export function App() {
   const workspaceEmpty = sessions.length === 0 || !sessions.some((s) => s.workspaceId === activeWorkspaceId && !s.backlog);
   const { createSession, closeSession, setMainDimensions, restoreState, clearTerminal } = usePtyBridge();
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [showSyncSettings, setShowSyncSettings] = useState(false);
   const dragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  // Bridge renderer state to sync server for mobile clients
+  useSyncBridge();
 
   // Restore previous state (no auto-create — show onboarding if empty)
   useEffect(() => {
@@ -253,9 +259,13 @@ export function App() {
         >
           <WorkspaceDots />
           <WorkspaceContainer sidebarWidth={sidebarWidth} onClose={closeSession} sidebarRef={sidebarRef} />
-          <SessionControls onNewSession={handleNewSession} onAdoptTerminals={handleAdoptTerminals} />
+          <SessionControls onNewSession={handleNewSession} onAdoptTerminals={handleAdoptTerminals} onShowSync={() => setShowSyncSettings(true)} />
         </div>
       </div>
+
+      {showSyncSettings && (
+        <SyncSettingsPanel onClose={() => setShowSyncSettings(false)} />
+      )}
     </div>
   );
 }

@@ -6,6 +6,9 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { setupMenu } from './menu';
 import { IPC } from '../shared/ipc-channels';
 import { startHookWatcher } from './hook-watcher';
+import { startSyncServer, forwardHookStatus, updateSnapshot, sendPlanContent, startPairing, getSyncStatus } from './sync-server';
+import { loadSyncConfig, saveSyncConfig, removePairedDevice } from './sync-auth';
+import { registerSyncIpcHandlers } from './sync-ipc-handlers';
 
 if (started) {
   app.quit();
@@ -75,6 +78,14 @@ if (!gotLock) {
   registerIpcHandlers(ptyManager, () => mainWindow);
   const stopHookWatcher = startHookWatcher(ptyManager, () => mainWindow);
 
+  // Start mobile sync server if enabled
+  const syncConfig = loadSyncConfig();
+  let syncServerHandle: { stop: () => void } | null = null;
+  if (syncConfig.enabled) {
+    syncServerHandle = startSyncServer(ptyManager, () => mainWindow);
+  }
+  registerSyncIpcHandlers(() => mainWindow, ptyManager, () => syncServerHandle, (handle) => { syncServerHandle = handle; });
+
   app.on('second-instance', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -112,6 +123,7 @@ if (!gotLock) {
       }, 500);
     } else {
       stopHookWatcher();
+      syncServerHandle?.stop();
       ptyManager.closeAll();
     }
   });

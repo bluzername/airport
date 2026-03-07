@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc-channels';
-import type { PtyCreateOptions, PtyDataEvent, PtyExitEvent, HookStatusEvent, HookPlanEvent, SpawnRequestEvent, AirportApi, SessionInfo, SavedState, ExternalTerminal, PlanFile } from '../shared/types';
+import type { PtyCreateOptions, PtyDataEvent, PtyExitEvent, HookStatusEvent, HookPlanEvent, SpawnRequestEvent, AirportApi, SessionInfo, SavedState, ExternalTerminal, PlanFile, TerminalSession, Workspace } from '../shared/types';
+import type { PairingInfo } from '../shared/sync-types';
 
 const api: AirportApi = {
   pty: {
@@ -65,4 +66,47 @@ const api: AirportApi = {
   },
 };
 
+// Sync API for mobile companion
+const syncApi = {
+  updateSnapshot: (payload: { sessions: TerminalSession[]; workspaces: Workspace[]; activeSessionId: string | null; activeWorkspaceId: string }) =>
+    ipcRenderer.send(IPC.SYNC_UPDATE_SNAPSHOT, payload),
+  startPairing: (): Promise<PairingInfo> =>
+    ipcRenderer.invoke(IPC.SYNC_START_PAIRING),
+  getStatus: (): Promise<{ running: boolean; port: number; connectedDevices: number; localIPs: string[] }> =>
+    ipcRenderer.invoke(IPC.SYNC_GET_STATUS),
+  setEnabled: (enabled: boolean): Promise<void> =>
+    ipcRenderer.invoke(IPC.SYNC_SET_ENABLED, enabled),
+  removeDevice: (deviceId: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.SYNC_REMOVE_DEVICE, deviceId),
+  sendPlanContent: (sessionId: string, filename: string, content: string) =>
+    ipcRenderer.send(IPC.SYNC_PLAN_CONTENT, sessionId, filename, content),
+  // Events from mobile → desktop (forwarded by sync server)
+  onSessionRename: (callback: (id: string, title: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string, title: string) => callback(id, title);
+    ipcRenderer.on(IPC.SYNC_SESSION_RENAME, handler);
+    return () => ipcRenderer.removeListener(IPC.SYNC_SESSION_RENAME, handler);
+  },
+  onSessionBacklog: (callback: (id: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string) => callback(id);
+    ipcRenderer.on(IPC.SYNC_SESSION_BACKLOG, handler);
+    return () => ipcRenderer.removeListener(IPC.SYNC_SESSION_BACKLOG, handler);
+  },
+  onSessionRestore: (callback: (id: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string) => callback(id);
+    ipcRenderer.on(IPC.SYNC_SESSION_RESTORE, handler);
+    return () => ipcRenderer.removeListener(IPC.SYNC_SESSION_RESTORE, handler);
+  },
+  onSessionSetActive: (callback: (id: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string) => callback(id);
+    ipcRenderer.on(IPC.SYNC_SESSION_SET_ACTIVE, handler);
+    return () => ipcRenderer.removeListener(IPC.SYNC_SESSION_SET_ACTIVE, handler);
+  },
+  onWorkspaceSwitch: (callback: (id: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, id: string) => callback(id);
+    ipcRenderer.on(IPC.SYNC_WORKSPACE_SWITCH, handler);
+    return () => ipcRenderer.removeListener(IPC.SYNC_WORKSPACE_SWITCH, handler);
+  },
+};
+
 contextBridge.exposeInMainWorld('airport', api);
+contextBridge.exposeInMainWorld('airportSync', syncApi);

@@ -4,9 +4,10 @@ import { useTerminalStore } from '../store/terminal-store';
 interface SessionControlsProps {
   onNewSession: () => void;
   onAdoptTerminals: () => void;
+  onShowSync?: () => void;
 }
 
-export function SessionControls({ onNewSession, onAdoptTerminals }: SessionControlsProps) {
+export function SessionControls({ onNewSession, onAdoptTerminals, onShowSync }: SessionControlsProps) {
   const { workspaces, activeWorkspaceId, addWorkspace, removeWorkspace } = useTerminalStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -172,6 +173,37 @@ export function SessionControls({ onNewSession, onAdoptTerminals }: SessionContr
           >
             Bring All Terminals Home
           </button>
+          {onShowSync && (
+            <>
+              <div style={{ height: 1, background: '#45475a', margin: '0' }} />
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onShowSync();
+                }}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  background: 'transparent',
+                  color: '#89b4fa',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+                  textAlign: 'left',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.background = '#45475a';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.background = 'transparent';
+                }}
+              >
+                Mobile Sync
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

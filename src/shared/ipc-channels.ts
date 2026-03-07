@@ -16,4 +16,17 @@ export const IPC = {
   DISCOVER_TERMINALS: 'terminals:discover',
   PLAN_GET_FILES: 'plan:getFiles',
   PLAN_READ_FILE: 'plan:readFile',
+  // Mobile sync
+  SYNC_UPDATE_SNAPSHOT: 'sync:updateSnapshot',
+  SYNC_START_PAIRING: 'sync:startPairing',
+  SYNC_GET_STATUS: 'sync:getStatus',
+  SYNC_SET_ENABLED: 'sync:setEnabled',
+  SYNC_REMOVE_DEVICE: 'sync:removeDevice',
+  SYNC_SESSION_RENAME: 'sync:session:rename',
+  SYNC_SESSION_BACKLOG: 'sync:session:backlog',
+  SYNC_SESSION_RESTORE: 'sync:session:restore',
+  SYNC_SESSION_SET_ACTIVE: 'sync:session:setActive',
+  SYNC_WORKSPACE_SWITCH: 'sync:workspace:switch',
+  SYNC_PLAN_REQUEST: 'sync:plan:request',
+  SYNC_PLAN_CONTENT: 'sync:plan:content',
 } as const;
