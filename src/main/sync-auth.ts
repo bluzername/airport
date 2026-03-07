@@ -11,6 +11,12 @@ import type { SyncConfig, PairedDevice } from '../shared/sync-types';
 import { DEFAULT_SYNC_PORT } from '../shared/sync-types';
 
 const CONFIG_FILE = 'sync-config.json';
+const MAX_PAIR_ATTEMPTS = 5;
+const PAIR_LOCKOUT_MS = 60 * 1000; // 1 minute lockout after max attempts
+
+// Brute-force protection state
+let pairAttemptCount = 0;
+let pairLockoutUntil = 0;
 
 function configPath(): string {
   return path.join(app.getPath('userData'), CONFIG_FILE);
@@ -39,11 +45,16 @@ export function saveSyncConfig(config: SyncConfig): void {
  * Returns a 6-character alphanumeric code (easy to type as fallback to QR).
  */
 export function generatePairingToken(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 31 chars, no ambiguous
   let token = '';
-  const bytes = crypto.randomBytes(6);
+  // Use rejection sampling to avoid modulo bias
   for (let i = 0; i < 6; i++) {
-    token += chars[bytes[i] % chars.length];
+    const limit = 256 - (256 % chars.length); // 256 - (256 % 31) = 248
+    let val: number;
+    do {
+      val = crypto.randomBytes(1)[0];
+    } while (val >= limit);
+    token += chars[val % chars.length];
   }
   return token;
 }
@@ -77,14 +88,44 @@ export function removePairedDevice(deviceId: string): void {
 
 /**
  * Check if a device token is valid (belongs to a paired device).
+ * Uses timing-safe comparison to prevent timing attacks.
  */
 export function isDeviceAuthorized(deviceId: string, token: string): boolean {
   const config = loadSyncConfig();
   const device = config.pairedDevices.find(d => d.id === deviceId);
   if (!device) return false;
-  // Token is stored as the device's publicKey field for simplicity
-  // In production, use proper challenge-response
-  return device.publicKey === token;
+  const expected = Buffer.from(device.publicKey, 'utf-8');
+  const provided = Buffer.from(token, 'utf-8');
+  if (expected.length !== provided.length) return false;
+  return crypto.timingSafeEqual(expected, provided);
+}
+
+/**
+ * Check if pairing attempts are rate-limited.
+ */
+export function isPairRateLimited(): boolean {
+  if (Date.now() < pairLockoutUntil) return true;
+  return false;
+}
+
+/**
+ * Record a failed pairing attempt. Returns true if now locked out.
+ */
+export function recordPairFailure(): boolean {
+  pairAttemptCount++;
+  if (pairAttemptCount >= MAX_PAIR_ATTEMPTS) {
+    pairLockoutUntil = Date.now() + PAIR_LOCKOUT_MS;
+    pairAttemptCount = 0;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reset pairing attempt counter (on success).
+ */
+export function resetPairAttempts(): void {
+  pairAttemptCount = 0;
 }
 
 /**

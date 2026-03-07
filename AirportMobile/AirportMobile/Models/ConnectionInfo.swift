@@ -1,7 +1,15 @@
 import Foundation
 
-/// Persisted connection info for auto-reconnect.
-struct SavedConnection: Codable {
+/// Non-sensitive connection metadata (stored in UserDefaults).
+struct SavedConnectionMeta: Codable {
+    let host: String
+    let port: Int
+    let serverName: String
+    let pairedAt: Date
+}
+
+/// Full connection info returned by ConnectionStore.load().
+struct SavedConnection {
     let host: String
     let port: Int
     let deviceToken: String
@@ -18,20 +26,42 @@ struct PairingQRData: Codable {
 }
 
 enum ConnectionStore {
-    private static let key = "airport_saved_connection"
+    private static let metaKey = "airport_connection_meta"
+    private static let tokenKey = "airport_device_token"
 
     static func save(_ connection: SavedConnection) {
-        if let data = try? JSONEncoder().encode(connection) {
-            UserDefaults.standard.set(data, forKey: key)
+        // Store token in Keychain (secure)
+        _ = KeychainStore.save(key: tokenKey, value: connection.deviceToken)
+
+        // Store non-sensitive metadata in UserDefaults
+        let meta = SavedConnectionMeta(
+            host: connection.host,
+            port: connection.port,
+            serverName: connection.serverName,
+            pairedAt: connection.pairedAt
+        )
+        if let data = try? JSONEncoder().encode(meta) {
+            UserDefaults.standard.set(data, forKey: metaKey)
         }
     }
 
     static func load() -> SavedConnection? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(SavedConnection.self, from: data)
+        guard let metaData = UserDefaults.standard.data(forKey: metaKey),
+              let meta = try? JSONDecoder().decode(SavedConnectionMeta.self, from: metaData),
+              let token = KeychainStore.load(key: tokenKey) else {
+            return nil
+        }
+        return SavedConnection(
+            host: meta.host,
+            port: meta.port,
+            deviceToken: token,
+            serverName: meta.serverName,
+            pairedAt: meta.pairedAt
+        )
     }
 
     static func clear() {
-        UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: metaKey)
+        KeychainStore.delete(key: tokenKey)
     }
 }

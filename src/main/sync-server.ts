@@ -17,7 +17,15 @@ import {
   loadSyncConfig, saveSyncConfig,
   generatePairingToken, generateDeviceToken,
   addPairedDevice, isDeviceAuthorized, touchDevice,
+  isPairRateLimited, recordPairFailure, resetPairAttempts,
 } from './sync-auth';
+
+// ── Security Constants ────────────────────────────────────────────
+
+const MAX_REQUEST_BODY_BYTES = 4096;       // 4KB max for pairing POST
+const MAX_WS_MESSAGE_BYTES = 64 * 1024;   // 64KB max WebSocket message
+const MAX_CONNECTED_CLIENTS = 5;           // Max simultaneous connections
+const MAX_TERMINAL_SUBSCRIPTIONS = 10;     // Max subscriptions per client
 import { startAdvertising, stopAdvertising, getLocalIPs } from './bonjour';
 import type {
   ServerMessage, ClientMessage, MobileSession, PairingInfo,
@@ -109,9 +117,18 @@ export function startSyncServer(
     res.end();
   });
 
-  wss = new WebSocketServer({ server: httpServer });
+  wss = new WebSocketServer({
+    server: httpServer,
+    maxPayload: MAX_WS_MESSAGE_BYTES,
+  });
 
   wss.on('connection', (ws: WebSocket) => {
+    // Reject if too many connections
+    if (clients.length >= MAX_CONNECTED_CLIENTS) {
+      ws.close(4008, 'Too many connections');
+      return;
+    }
+
     const client: ConnectedClient = {
       ws,
       deviceId: '',
@@ -212,9 +229,31 @@ export function startPairing(): PairingInfo {
 }
 
 function handlePairRequest(req: IncomingMessage, res: import('node:http').ServerResponse): void {
+  // Rate limiting
+  if (isPairRateLimited()) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Too many attempts. Try again later.' }));
+    return;
+  }
+
   let body = '';
-  req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+  let bodySize = 0;
+
+  req.on('data', (chunk: Buffer) => {
+    bodySize += chunk.length;
+    // Enforce body size limit to prevent memory exhaustion
+    if (bodySize > MAX_REQUEST_BODY_BYTES) {
+      req.destroy();
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Request too large' }));
+      return;
+    }
+    body += chunk.toString();
+  });
+
   req.on('end', () => {
+    if (bodySize > MAX_REQUEST_BODY_BYTES) return; // Already handled
+
     try {
       const { token, deviceName, deviceId } = JSON.parse(body);
 
@@ -224,21 +263,39 @@ function handlePairRequest(req: IncomingMessage, res: import('node:http').Server
         return;
       }
 
+      // Validate inputs
+      if (typeof token !== 'string' || typeof deviceId !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+        return;
+      }
+
       if (token !== activePairingToken) {
+        const lockedOut = recordPairFailure();
         res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid pairing token' }));
+        res.end(JSON.stringify({
+          error: lockedOut
+            ? 'Too many failed attempts. Locked for 1 minute.'
+            : 'Invalid pairing token',
+        }));
         return;
       }
 
       // Pairing successful — generate a persistent device token
+      resetPairAttempts();
       const deviceToken = generateDeviceToken();
 
+      // Sanitize device name (limit length, strip control chars)
+      const safeName = (typeof deviceName === 'string' ? deviceName : 'Unknown Device')
+        .slice(0, 64)
+        .replace(/[\x00-\x1f\x7f]/g, '');
+
       addPairedDevice({
-        id: deviceId,
-        name: deviceName || 'Unknown Device',
+        id: deviceId.slice(0, 128),
+        name: safeName || 'Unknown Device',
         pairedAt: Date.now(),
         lastSeenAt: Date.now(),
-        publicKey: deviceToken, // Used for auth
+        publicKey: deviceToken,
       });
 
       // Invalidate pairing token
@@ -288,9 +345,15 @@ function handleClientMessage(
       send(client, { type: 'pong' });
       break;
 
-    case 'pty:write':
-      ptyManager.write(msg.sessionId, msg.data);
+    case 'pty:write': {
+      // Validate session exists before writing
+      const sessionExists = currentSnapshot.sessions.some(s => s.id === msg.sessionId);
+      if (!sessionExists) break;
+      // Limit write size to prevent abuse (max 1KB per message)
+      const data = typeof msg.data === 'string' ? msg.data.slice(0, 1024) : '';
+      ptyManager.write(msg.sessionId, data);
       break;
+    }
 
     case 'session:rename': {
       const win = getWindow();
@@ -341,6 +404,10 @@ function handleClientMessage(
     }
 
     case 'terminal:subscribe':
+      // Limit subscriptions per client
+      if (client.subscribedTerminals.size >= MAX_TERMINAL_SUBSCRIPTIONS) break;
+      // Validate session exists
+      if (!currentSnapshot.sessions.some(s => s.id === msg.sessionId)) break;
       client.subscribedTerminals.add(msg.sessionId);
       // Send buffered output
       send(client, {
