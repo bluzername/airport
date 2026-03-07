@@ -5,6 +5,7 @@ struct SavedConnectionMeta: Codable {
     let host: String
     let port: Int
     let serverName: String
+    let certFingerprint: String  // TLS certificate SHA-256 fingerprint
     let pairedAt: Date
 }
 
@@ -14,6 +15,7 @@ struct SavedConnection {
     let port: Int
     let deviceToken: String
     let serverName: String
+    let certFingerprint: String
     let pairedAt: Date
 }
 
@@ -23,6 +25,7 @@ struct PairingQRData: Codable {
     let p: Int      // port
     let t: String   // pairing token
     let n: String   // server name
+    let k: String?  // cert fingerprint (optional for backwards compat)
 }
 
 enum ConnectionStore {
@@ -38,6 +41,7 @@ enum ConnectionStore {
             host: connection.host,
             port: connection.port,
             serverName: connection.serverName,
+            certFingerprint: connection.certFingerprint,
             pairedAt: connection.pairedAt
         )
         if let data = try? JSONEncoder().encode(meta) {
@@ -56,6 +60,7 @@ enum ConnectionStore {
             port: meta.port,
             deviceToken: token,
             serverName: meta.serverName,
+            certFingerprint: meta.certFingerprint,
             pairedAt: meta.pairedAt
         )
     }

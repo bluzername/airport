@@ -67,7 +67,7 @@ export function SyncSettingsPanel({ onClose }: { onClose: () => void }) {
   };
 
   const qrData = pairing
-    ? JSON.stringify({ h: pairing.host, p: pairing.port, t: pairing.token, n: pairing.name })
+    ? JSON.stringify({ h: pairing.host, p: pairing.port, t: pairing.token, n: pairing.name, k: pairing.publicKey })
     : '';
 
   return (

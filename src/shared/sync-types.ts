@@ -54,6 +54,9 @@ export interface MobileSession {
 }
 
 export function toMobileSession(session: TerminalSession): MobileSession {
+  // Strip cwd to last path component to avoid leaking full filesystem paths
+  const cwdBasename = session.cwd ? session.cwd.split('/').pop() || '' : '';
+
   return {
     id: session.id,
     title: session.title,
@@ -69,7 +72,7 @@ export function toMobileSession(session: TerminalSession): MobileSession {
     gitBranch: session.gitBranch,
     colorIndex: session.colorIndex,
     backlog: session.backlog,
-    cwd: session.cwd,
+    cwd: cwdBasename,
     workspaceId: session.workspaceId,
     hasPlans: session.planFiles.length > 0,
   };

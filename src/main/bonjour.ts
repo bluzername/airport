@@ -76,3 +76,29 @@ export function stopAdvertising(): void {
 export function isAdvertising(): boolean {
   return advertiseProcess !== null && !advertiseProcess.killed;
 }
+
+/**
+ * Get a LAN-safe bind address.
+ * Returns the first private/link-local IPv4 address found, so the
+ * server is never accidentally exposed on a public-facing interface.
+ * Falls back to '127.0.0.1' if no private address is found.
+ */
+export function getLanBindAddress(): string {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      // RFC 1918 private ranges + link-local
+      if (
+        iface.address.startsWith('10.') ||
+        iface.address.startsWith('172.') ||
+        iface.address.startsWith('192.168.') ||
+        iface.address.startsWith('169.254.')
+      ) {
+        return iface.address;
+      }
+    }
+  }
+  // No private interface found — bind to loopback only (safe default)
+  return '127.0.0.1';
+}

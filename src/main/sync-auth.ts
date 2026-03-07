@@ -67,6 +67,15 @@ export function generateDeviceToken(): string {
 }
 
 /**
+ * Hash a device token for storage.
+ * Only the hash is persisted — the raw token is returned to the device
+ * during pairing and never stored on disk.
+ */
+export function hashDeviceToken(token: string): string {
+  return crypto.createHash('sha256').update(token, 'utf-8').digest('hex');
+}
+
+/**
  * Add a paired device to the config.
  */
 export function addPairedDevice(device: PairedDevice): void {
@@ -88,14 +97,17 @@ export function removePairedDevice(deviceId: string): void {
 
 /**
  * Check if a device token is valid (belongs to a paired device).
- * Uses timing-safe comparison to prevent timing attacks.
+ * The stored value is a SHA-256 hash of the token. We hash the
+ * incoming token and compare the hashes using timing-safe equality.
  */
 export function isDeviceAuthorized(deviceId: string, token: string): boolean {
   const config = loadSyncConfig();
   const device = config.pairedDevices.find(d => d.id === deviceId);
   if (!device) return false;
+  // Hash the provided token and compare to the stored hash
+  const providedHash = hashDeviceToken(token);
   const expected = Buffer.from(device.publicKey, 'utf-8');
-  const provided = Buffer.from(token, 'utf-8');
+  const provided = Buffer.from(providedHash, 'utf-8');
   if (expected.length !== provided.length) return false;
   return crypto.timingSafeEqual(expected, provided);
 }

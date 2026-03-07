@@ -274,20 +274,21 @@ struct OnboardingFlow: View {
                 token: manualCode
             )
 
-            // Save connection
+            // Save connection (includes cert fingerprint for TLS pinning)
             let saved = SavedConnection(
                 host: result.host,
                 port: result.port,
                 deviceToken: result.deviceToken,
                 serverName: result.serverName,
+                certFingerprint: result.certFingerprint,
                 pairedAt: Date()
             )
             ConnectionStore.save(saved)
             appState.hasSavedConnection = true
             appState.serverName = result.serverName
 
-            // Connect
-            appState.connect(host: result.host, port: result.port, deviceToken: result.deviceToken)
+            // Connect with cert pinning
+            appState.connect(host: result.host, port: result.port, deviceToken: result.deviceToken, certFingerprint: result.certFingerprint)
 
             // Request notification permission
             NotificationManager.requestPermission()
@@ -312,12 +313,13 @@ struct OnboardingFlow: View {
                 port: result.port,
                 deviceToken: result.deviceToken,
                 serverName: result.serverName,
+                certFingerprint: result.certFingerprint,
                 pairedAt: Date()
             )
             ConnectionStore.save(saved)
             appState.hasSavedConnection = true
             appState.serverName = result.serverName
-            appState.connect(host: result.host, port: result.port, deviceToken: result.deviceToken)
+            appState.connect(host: result.host, port: result.port, deviceToken: result.deviceToken, certFingerprint: result.certFingerprint)
 
             NotificationManager.requestPermission()
             NotificationManager.setupCategories()

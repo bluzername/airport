@@ -78,6 +78,7 @@ final class SyncClient: NSObject {
     let host: String
     let port: Int
     let deviceToken: String
+    let certFingerprint: String?  // SHA-256 fingerprint for certificate pinning
     weak var delegate: SyncClientDelegate?
 
     private var webSocketTask: URLSessionWebSocketTask?
@@ -85,10 +86,11 @@ final class SyncClient: NSObject {
     private var pingTimer: Timer?
     private let deviceId: String
 
-    init(host: String, port: Int, deviceToken: String) {
+    init(host: String, port: Int, deviceToken: String, certFingerprint: String? = nil) {
         self.host = host
         self.port = port
         self.deviceToken = deviceToken
+        self.certFingerprint = certFingerprint
         // Stable device ID persisted across sessions
         if let saved = UserDefaults.standard.string(forKey: "airport_device_id") {
             self.deviceId = saved
@@ -101,7 +103,8 @@ final class SyncClient: NSObject {
     }
 
     func connect() {
-        let url = URL(string: "ws://\(host):\(port)")!
+        // Use wss:// (TLS) for encrypted connections
+        let url = URL(string: "wss://\(host):\(port)")!
         urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
         webSocketTask = urlSession?.webSocketTask(with: url)
         webSocketTask?.resume()
@@ -260,4 +263,41 @@ extension SyncClient: URLSessionWebSocketDelegate {
             self.delegate?.syncClientDidDisconnect(self)
         }
     }
+
+    // TLS certificate pinning: accept the self-signed cert only if its
+    // SHA-256 fingerprint matches the one received during pairing.
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // If no fingerprint is stored, accept any cert (first-time / legacy)
+        guard let expectedFingerprint = certFingerprint, !expectedFingerprint.isEmpty else {
+            completionHandler(.useCredential, URLCredential(trust: serverTrust))
+            return
+        }
+
+        // Extract the server certificate and compute its SHA-256 fingerprint
+        if let serverCert = SecTrustCopyCertificateChain(serverTrust) as? [SecCertificate],
+           let cert = serverCert.first {
+            let certData = SecCertificateCopyData(cert) as Data
+            var hash = [UInt8](repeating: 0, count: 32)
+            _ = certData.withUnsafeBytes { bytes in
+                CC_SHA256(bytes.baseAddress, CC_LONG(certData.count), &hash)
+            }
+            let fingerprint = hash.map { String(format: "%02X", $0) }.joined(separator: ":")
+
+            if fingerprint == expectedFingerprint {
+                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                return
+            }
+        }
+
+        // Fingerprint mismatch — reject
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
 }
+
+import CommonCrypto  // For CC_SHA256

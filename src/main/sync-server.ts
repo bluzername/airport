@@ -6,19 +6,34 @@
  * back from them.
  */
 
-import { createServer, IncomingMessage } from 'node:http';
+import { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
+import { createServer as createTlsServer } from 'node:https';
 import { WebSocketServer, WebSocket } from 'ws';
 import os from 'node:os';
 import { BrowserWindow } from 'electron';
 import { PtyManager } from './pty-manager';
-import { IPC } from '../shared/ipc-channels';
 import {
   loadSyncConfig, saveSyncConfig,
-  generatePairingToken, generateDeviceToken,
+  generatePairingToken, generateDeviceToken, hashDeviceToken,
   addPairedDevice, isDeviceAuthorized, touchDevice,
   isPairRateLimited, recordPairFailure, resetPairAttempts,
 } from './sync-auth';
+import { startAdvertising, stopAdvertising, getLocalIPs, getLanBindAddress } from './bonjour';
+import { getOrCreateTlsCredentials } from './sync-tls';
+import type {
+  ServerMessage, ClientMessage, MobileSession, PairingInfo,
+} from '../shared/sync-types';
+import { DEFAULT_SYNC_PORT, toMobileSession } from '../shared/sync-types';
+import type { TerminalSession, Workspace, HookStatusEvent } from '../shared/types';
+
+// ── Logging ───────────────────────────────────────────────────────
+
+function syncLog(level: 'info' | 'warn' | 'error', message: string, meta?: Record<string, unknown>): void {
+  const ts = new Date().toISOString();
+  const metaStr = meta ? ' ' + JSON.stringify(meta) : '';
+  console[level](`[sync ${ts}] ${message}${metaStr}`);
+}
 
 // ── Security Constants ────────────────────────────────────────────
 
@@ -26,12 +41,6 @@ const MAX_REQUEST_BODY_BYTES = 4096;       // 4KB max for pairing POST
 const MAX_WS_MESSAGE_BYTES = 64 * 1024;   // 64KB max WebSocket message
 const MAX_CONNECTED_CLIENTS = 5;           // Max simultaneous connections
 const MAX_TERMINAL_SUBSCRIPTIONS = 10;     // Max subscriptions per client
-import { startAdvertising, stopAdvertising, getLocalIPs } from './bonjour';
-import type {
-  ServerMessage, ClientMessage, MobileSession, PairingInfo,
-} from '../shared/sync-types';
-import { DEFAULT_SYNC_PORT, toMobileSession } from '../shared/sync-types';
-import type { TerminalSession, Workspace, HookStatusEvent } from '../shared/types';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -101,7 +110,11 @@ export function startSyncServer(
   const config = loadSyncConfig();
   const port = config.port || DEFAULT_SYNC_PORT;
 
-  httpServer = createServer((req, res) => {
+  // Generate or load TLS credentials
+  const tls = getOrCreateTlsCredentials();
+  syncLog('info', 'TLS certificate loaded', { fingerprint: tls.fingerprint });
+
+  const requestHandler = (req: IncomingMessage, res: import('node:http').ServerResponse) => {
     // Pairing endpoint — mobile scans QR or enters code
     if (req.method === 'POST' && req.url === '/pair') {
       handlePairRequest(req, res);
@@ -115,7 +128,13 @@ export function startSyncServer(
     }
     res.writeHead(404);
     res.end();
-  });
+  };
+
+  // Use HTTPS (TLS) server for encrypted connections
+  httpServer = createTlsServer(
+    { cert: tls.cert, key: tls.key },
+    requestHandler,
+  );
 
   wss = new WebSocketServer({
     server: httpServer,
@@ -150,6 +169,9 @@ export function startSyncServer(
     ws.on('close', () => {
       const idx = clients.indexOf(client);
       if (idx >= 0) clients.splice(idx, 1);
+      if (client.authenticated) {
+        syncLog('info', 'Device disconnected', { deviceId: client.deviceId });
+      }
     });
 
     ws.on('error', () => {
@@ -159,19 +181,28 @@ export function startSyncServer(
     // Client must authenticate within 10 seconds
     setTimeout(() => {
       if (!client.authenticated) {
+        syncLog('warn', 'Client authentication timeout, disconnecting');
         ws.close(4001, 'Authentication timeout');
       }
     }, 10000);
   });
 
-  httpServer.listen(port, '0.0.0.0', () => {
+  // Bind to LAN interfaces only (not 0.0.0.0) to avoid exposing on public IPs.
+  // Falls back to 0.0.0.0 only if no private IP is detected.
+  const bindAddress = getLanBindAddress();
+  syncLog('info', 'Starting sync server', { port, bindAddress });
+
+  httpServer.listen(port, bindAddress, () => {
+    syncLog('info', 'Sync server listening', { port, bindAddress, tls: true });
     startAdvertising(port);
   });
 
   httpServer.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      // Port in use — try next port
-      httpServer?.listen(port + 1, '0.0.0.0');
+      syncLog('warn', `Port ${port} in use, trying ${port + 1}`);
+      httpServer?.listen(port + 1, bindAddress);
+    } else {
+      syncLog('error', 'Server error', { code: err.code, message: err.message });
     }
   });
 
@@ -218,12 +249,15 @@ export function startPairing(): PairingInfo {
 
   const config = loadSyncConfig();
   const ips = getLocalIPs();
+  const tls = getOrCreateTlsCredentials();
+
+  syncLog('info', 'Pairing started', { token: activePairingToken, expiresIn: '5m' });
 
   return {
     host: ips[0] || '127.0.0.1',
     port: config.port || DEFAULT_SYNC_PORT,
     token: activePairingToken,
-    publicKey: '', // Reserved for future E2E encryption
+    publicKey: tls.fingerprint, // TLS cert fingerprint for certificate pinning
     name: os.hostname(),
   };
 }
@@ -231,6 +265,7 @@ export function startPairing(): PairingInfo {
 function handlePairRequest(req: IncomingMessage, res: import('node:http').ServerResponse): void {
   // Rate limiting
   if (isPairRateLimited()) {
+    syncLog('warn', 'Pairing rate-limited — too many attempts');
     res.writeHead(429, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Too many attempts. Try again later.' }));
     return;
@@ -272,6 +307,7 @@ function handlePairRequest(req: IncomingMessage, res: import('node:http').Server
 
       if (token !== activePairingToken) {
         const lockedOut = recordPairFailure();
+        syncLog('warn', 'Pairing failed: invalid token', { lockedOut });
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: lockedOut
@@ -290,16 +326,19 @@ function handlePairRequest(req: IncomingMessage, res: import('node:http').Server
         .slice(0, 64)
         .replace(/[\x00-\x1f\x7f]/g, '');
 
+      // Store the HASH of the token, not the raw token.
+      // The raw token is only returned to the device and never persisted.
       addPairedDevice({
         id: deviceId.slice(0, 128),
         name: safeName || 'Unknown Device',
         pairedAt: Date.now(),
         lastSeenAt: Date.now(),
-        publicKey: deviceToken,
+        publicKey: hashDeviceToken(deviceToken),
       });
 
       // Invalidate pairing token
       activePairingToken = null;
+      syncLog('info', 'Device paired successfully', { deviceId: deviceId.slice(0, 128), deviceName: safeName });
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -327,9 +366,11 @@ function handleClientMessage(
       client.authenticated = true;
       client.deviceId = msg.deviceId;
       touchDevice(msg.deviceId);
+      syncLog('info', 'Device authenticated', { deviceId: msg.deviceId });
       // Send initial snapshot
       sendSnapshot(client);
     } else {
+      syncLog('warn', 'Device auth failed', { deviceId: msg.deviceId });
       client.ws.close(4003, 'Unauthorized');
     }
     return;
@@ -566,7 +607,7 @@ function diffSession(
   const fields: (keyof MobileSession)[] = [
     'title', 'customTitle', 'status', 'processName', 'isStandby',
     'lastOutputAt', 'hookMessage', 'hookDone', 'waitingQuestion',
-    'gitRepo', 'gitBranch', 'colorIndex', 'backlog', 'cwd', 'workspaceId',
+    'gitRepo', 'gitBranch', 'colorIndex', 'backlog', 'workspaceId',
   ];
 
   for (const key of fields) {
@@ -574,6 +615,12 @@ function diffSession(
       (changes as Record<string, unknown>)[key] = (next as Record<string, unknown>)[key];
       hasChanges = true;
     }
+  }
+
+  // Strip cwd to basename before sending to mobile
+  if (prev.cwd !== next.cwd) {
+    changes.cwd = next.cwd ? next.cwd.split('/').pop() || '' : '';
+    hasChanges = true;
   }
 
   // Check hasPlans

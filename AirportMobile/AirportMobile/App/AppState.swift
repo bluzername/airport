@@ -29,14 +29,14 @@ final class AppState {
         bonjourBrowser = BonjourBrowser()
 
         if let saved = saved {
-            connect(host: saved.host, port: saved.port, deviceToken: saved.deviceToken)
+            connect(host: saved.host, port: saved.port, deviceToken: saved.deviceToken, certFingerprint: saved.certFingerprint)
         }
     }
 
     // MARK: - Connection
 
-    func connect(host: String, port: Int, deviceToken: String) {
-        let client = SyncClient(host: host, port: port, deviceToken: deviceToken)
+    func connect(host: String, port: Int, deviceToken: String, certFingerprint: String? = nil) {
+        let client = SyncClient(host: host, port: port, deviceToken: deviceToken, certFingerprint: certFingerprint)
         client.delegate = self
         client.connect()
         syncClient = client
